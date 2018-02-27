@@ -14,7 +14,7 @@
 from ncclient.xml_ import to_ele, new_ele
 
 from netman.adapters.switches.juniper.base import interface_speed, interface_replace, interface_speed_update, \
-    first_text, bond_name, Juniper
+    first_text, bond_name, Juniper, parse_range, value_of
 from netman.core.objects.exceptions import BadVlanName, BadVlanNumber, VlanAlreadyExist, UnknownVlan
 
 
@@ -97,6 +97,9 @@ class JuniperCustomStrategies(object):
     def get_vlans(self, config):
         return config.xpath("data/configuration/vlans/vlan")
 
+    def get_interface_vlans(selfs, interface):
+        return interface.xpath("unit/family/ethernet-switching/vlan/members")
+
     def get_vlan_config(self, number, config):
         vlan_node = config.xpath("data/configuration/vlans/vlan/vlan-id[text()=\"{}\"]/..".format(number))
 
@@ -115,3 +118,27 @@ class JuniperCustomStrategies(object):
                 raise BadVlanName()
 
         raise
+
+    def list_vlan_members(self, interface_node, config):
+        vlans = set()
+        for members in interface_node.xpath("unit/family/ethernet-switching/vlan/members"):
+            vlan_id = value_of(config.xpath('data/configuration/vlans/vlan/name[text()="{}"]/../vlan-id'.format(members.text)), transformer=int)
+            if vlan_id:
+                vlans = vlans.union([vlan_id])
+            else:
+                vlans = vlans.union(parse_range(members.text))
+        return sorted(vlans)
+
+    def create_interface(self, name, unit):
+        return to_ele("""
+            <interface>
+                <name>{}</name>
+                <unit>
+                    <name>{}</name>
+                    <family>
+                        <ethernet-switching>
+                        </ethernet-switching>
+                    </family>
+                </unit>
+            </interface>
+            """.format(name, unit))

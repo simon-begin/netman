@@ -1,4 +1,4 @@
-# Copyright 2015 Internap.
+# Copyright 2018 Internap.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,16 +15,17 @@ import textwrap
 import unittest
 
 from flexmock import flexmock, flexmock_teardown
-from hamcrest import assert_that, equal_to, instance_of, contains_string
+from hamcrest import assert_that, equal_to, instance_of, contains_string, has_length
 from ncclient.operations import RPCError
 from ncclient.xml_ import to_ele
 
 from netman.adapters.switches.juniper.base import Juniper
 from netman.adapters.switches.juniper.mx import netconf
-from netman.core.objects.exceptions import VlanAlreadyExist, BadVlanNumber, BadVlanName, UnknownVlan
+from netman.core.objects.exceptions import VlanAlreadyExist, BadVlanNumber, BadVlanName, UnknownVlan, UnknownInterface
+from netman.core.objects.port_modes import ACCESS
 from netman.core.objects.switch_descriptor import SwitchDescriptor
 from netman.core.switch_factory import RealSwitchFactory
-from tests.adapters.switches.juniper_test import an_ok_response, is_xml, a_configuration
+from tests.adapters.switches.juniper_test import an_ok_response, is_xml, a_configuration, an_rpc_response
 
 
 def test_factory():
@@ -297,3 +298,395 @@ class JuniperMXTest(unittest.TestCase):
             self.switch.remove_vlan(20)
 
         assert_that(str(expect.exception), equal_to("Vlan 20 not found"))
+
+    def test_get_interface(self):
+        self.switch.in_transaction = False
+        self.netconf_mock.should_receive("get_config").with_args(source="running", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces>
+                    <interface>
+                        <name>xe-0/0/1</name>
+                    </interface>
+                </interfaces>
+                <bridge-domains />
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <interfaces>
+              <interface>
+                <name>xe-0/0/1</name>
+                <unit>
+                  <name>0</name>
+                  <family>
+                    <bridge>
+                    </bridge>
+                  </family>
+                </unit>
+              </interface>
+            </interfaces>
+            <bridge-domains/>
+        """))
+
+        interface = self.switch.get_interface('xe-0/0/1')
+
+        assert_that(interface.name, equal_to("xe-0/0/1"))
+        assert_that(interface.shutdown, equal_to(False))
+        assert_that(interface.port_mode, equal_to(ACCESS))
+        assert_that(interface.access_vlan, equal_to(None))
+        assert_that(interface.trunk_native_vlan, equal_to(None))
+        assert_that(interface.trunk_vlans, equal_to([]))
+        assert_that(interface.auto_negotiation, equal_to(None))
+        assert_that(interface.mtu, equal_to(None))
+
+    def test_get_interfaces_supports_named_vlans(self):
+        self.switch.in_transaction = True
+
+        self.netconf_mock.should_receive("rpc").with_args(is_xml("""
+                    <get-interface-information>
+                      <terse/>
+                    </get-interface-information>
+                """)).and_return(an_rpc_response(textwrap.dedent("""
+                    <interface-information style="terse">
+                      <physical-interface>
+                        <name>
+                          xe-0/0/1
+                        </name>
+                        <admin-status>
+                          up
+                        </admin-status>
+                        <oper-status>
+                          down
+                        </oper-status>
+                        <logical-interface>
+                          <name>
+                            xe-0/0/1.0
+                          </name>
+                          <admin-status>
+                            up
+                          </admin-status>
+                          <oper-status>
+                            down
+                          </oper-status>
+                          <filter-information></filter-information>
+                          <address-family>
+                            <address-family-name>
+                              eth-switch
+                            </address-family-name>
+                          </address-family>
+                        </logical-interface>
+                      </physical-interface>
+                    </interface-information>
+                """)))
+
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces />
+                <bridge-domains />
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <bridge-domains>
+              <domain>
+                <name>MON_VLAN_PREFERE</name>
+                <vlan-id>1234</vlan-id>
+                <description>Oh yeah</description>
+              </domain>
+            </bridge-domains>
+            <interfaces>
+              <interface>
+                <name>xe-0/0/1</name>
+                <unit>
+                  <name>0</name>
+                  <family>
+                    <bridge>
+                        <vlan-id-list>1234</vlan-id-list>
+                    </bridge>
+                  </family>
+                </unit>
+              </interface>
+            </interfaces>
+        """))
+        if1, = self.switch.get_interfaces()
+
+        assert_that(if1.name, equal_to("xe-0/0/1"))
+        assert_that(if1.access_vlan, equal_to(1234))
+
+    def test_get_interfaces_lists_configuration_less_interfaces(self):
+        self.switch.in_transaction = False
+
+        self.netconf_mock.should_receive("rpc").with_args(is_xml("""
+                    <get-interface-information>
+                      <terse/>
+                    </get-interface-information>
+                """)).and_return(an_rpc_response(textwrap.dedent("""
+                    <interface-information style="terse">
+                      <physical-interface>
+                        <name>
+                    xe-0/0/1
+                    </name>
+                        <admin-status>
+                    up
+                    </admin-status>
+                        <oper-status>
+                    down
+                    </oper-status>
+                      </physical-interface>
+                      <physical-interface>
+                        <name>
+                    xe-0/0/2
+                    </name>
+                        <admin-status>
+                    down
+                    </admin-status>
+                        <oper-status>
+                    down
+                    </oper-status>
+                      </physical-interface>
+                    </interface-information>
+                """)))
+
+        self.netconf_mock.should_receive("get_config").with_args(source="running", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces />
+                <bridge-domains />
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <interfaces />
+            <bridge-domains/>
+        """))
+
+        if1, if2 = self.switch.get_interfaces()
+
+        assert_that(if1.name, equal_to("xe-0/0/1"))
+        assert_that(if1.shutdown, equal_to(False))
+        assert_that(if1.port_mode, equal_to(ACCESS))
+        assert_that(if1.access_vlan, equal_to(None))
+        assert_that(if1.trunk_native_vlan, equal_to(None))
+        assert_that(if1.trunk_vlans, equal_to([]))
+
+        assert_that(if2.name, equal_to("xe-0/0/2"))
+        assert_that(if2.shutdown, equal_to(True))
+
+    def test_get_vlan_interfaces(self):
+        self.switch.in_transaction = False
+        self.netconf_mock.should_receive("get_config").with_args(source="running", filter=is_xml("""
+                <filter>
+                  <configuration>
+                    <bridge-domains>
+                      <domain>
+                        <vlan-id>705</vlan-id>
+                      </domain>
+                    </bridge-domains>
+                    <interfaces />
+                  </configuration>
+                </filter>
+            """)).and_return(a_configuration("""
+                <bridge-domains>
+                  <domain>
+                    <name>VLAN705</name>
+                    <vlan-id>705</vlan-id>
+                  </domain>
+                </bridge-domains>
+                <interfaces>
+                  <interface>
+                    <name>xe-0/0/6</name>
+                    <unit>
+                      <family>
+                        <bridge>
+                          <vlan-id-list>687</vlan-id-list>
+                          <vlan-id-list>705</vlan-id-list>
+                          <vlan-id-list>708</vlan-id-list>
+                        </bridge>
+                      </family>
+                    </unit>
+                  </interface>
+                  <interface>
+                    <name>xe-0/0/7</name>
+                    <unit>
+                      <family>
+                        <bridge>
+                          <vlan-id-list>705</vlan-id-list>
+                        </bridge>
+                      </family>
+                    </unit>
+                  </interface>
+                  <interface>
+                    <name>xe-0/0/8</name>
+                    <unit>
+                      <family>
+                        <bridge>
+                          <vlan-id-list>456</vlan-id-list>
+                        </bridge>
+                      </family>
+                    </unit>
+                  </interface>
+                  <interface>
+                    <name>xe-0/0/9</name>
+                    <unit>
+                      <family>
+                        <bridge>
+                          <vlan-id-list>700-800</vlan-id-list>
+                        </bridge>
+                      </family>
+                    </unit>
+                  </interface>
+                </interfaces>
+            """))
+
+        vlan_interfaces = self.switch.get_vlan_interfaces(705)
+
+        assert_that(vlan_interfaces, equal_to(["xe-0/0/6", "xe-0/0/7", "xe-0/0/9"]))
+
+    def test_get_nonexistent_interface_raises(self):
+        self.switch.in_transaction = False
+        self.netconf_mock.should_receive("get_config").with_args(source="running", filter=is_xml("""
+                    <filter>
+                      <configuration>
+                          <interfaces>
+                            <interface>
+                              <name>xe-0/0/INEXISTENT</name>
+                            </interface>
+                          </interfaces>
+                        <bridge-domains/>
+                      </configuration>
+                    </filter>
+                """)).and_return(a_configuration("""
+                    <interfaces/>
+                    <bridge-domains/>
+                """))
+        self.netconf_mock.should_receive("rpc").with_args(is_xml("""
+                    <get-interface-information>
+                      <terse/>
+                    </get-interface-information>
+                """)).and_return(an_rpc_response(textwrap.dedent("""
+                    <interface-information style="terse">
+                      <physical-interface>
+                        <name>
+                          xe-0/0/1
+                        </name>
+                        <admin-status>
+                          down
+                        </admin-status>
+                        <oper-status>
+                          down
+                        </oper-status>
+                      </physical-interface>
+                    </interface-information>
+                """)))
+
+        with self.assertRaises(UnknownInterface) as expect:
+            self.switch.get_interface('xe-0/0/INEXISTENT')
+
+        assert_that(str(expect.exception), equal_to("Unknown interface xe-0/0/INEXISTENT"))
+
+    def test_get_unconfigured_interface_could_be_disabled(self):
+        self.switch.in_transaction = False
+        self.netconf_mock.should_receive("get_config").with_args(source="running", filter=is_xml("""
+                        <filter>
+                          <configuration>
+                              <interfaces>
+                                <interface>
+                                  <name>xe-0/0/27</name>
+                                </interface>
+                              </interfaces>
+                            <bridge-domains/>
+                          </configuration>
+                        </filter>
+                    """)).and_return(a_configuration("""
+                        <interfaces/>
+                        <bridge-domains/>
+                    """))
+        self.netconf_mock.should_receive("rpc").with_args(is_xml("""
+                        <get-interface-information>
+                          <terse/>
+                        </get-interface-information>
+                    """)).and_return(an_rpc_response(textwrap.dedent("""
+                        <interface-information style="terse">
+                          <physical-interface>
+                            <name>
+                              xe-0/0/27
+                            </name>
+                            <admin-status>
+                              down
+                            </admin-status>
+                            <oper-status>
+                              down
+                            </oper-status>
+                          </physical-interface>
+                        </interface-information>
+                    """)))
+
+        assert_that(self.switch.get_interface('xe-0/0/27').shutdown, equal_to(True))
+
+    def test_get_vlan_interfaces_nonexisting_vlan(self):
+        self.switch.in_transaction = False
+        self.netconf_mock.should_receive("get_config").with_args(source="running", filter=is_xml("""
+                    <filter>
+                      <configuration>
+                        <bridge-domains>
+                          <domain>
+                            <vlan-id>9999999</vlan-id>
+                          </domain>
+                        </bridge-domains>
+                        <interfaces />
+                      </configuration>
+                    </filter>
+                """)).and_return(a_configuration("""
+                    <vlans />
+                    <interfaces>
+                        <interface>
+                          <name>xe-0/0/9</name>
+                          <unit>
+                            <family>
+                              <bridge>
+                                  <vlan-id-list>705</vlan-id-list>
+                              </bridge>
+                            </family>
+                          </unit>
+                        </interface>
+                    </interfaces>
+                """))
+        with self.assertRaises(UnknownVlan):
+            self.switch.get_vlan_interfaces("9999999")
+
+    def test_get_vlan_interfaces_with_name_as_member(self):
+        self.switch.in_transaction = False
+        self.netconf_mock.should_receive("get_config").with_args(source="running", filter=is_xml("""
+                        <filter>
+                          <configuration>
+                            <bridge-domains>
+                              <domain>
+                                <vlan-id>705</vlan-id>
+                              </domain>
+                            </bridge-domains>
+                            <interfaces />
+                          </configuration>
+                        </filter>
+                    """)).and_return(a_configuration("""
+                        <bridge-domains>
+                          <domain>
+                            <name>bleu</name>
+                            <vlan-id>705</vlan-id>
+                          </domain>
+                        </bridge-domains>
+                        <interfaces>
+                            <interface>
+                              <name>xe-0/0/9</name>
+                              <unit>
+                                <family>
+                                  <bridge>
+                                    <vlan-id-list>bleu</vlan-id-list>
+                                  </bridge>
+                                </family>
+                              </unit>
+                            </interface>
+                        </interfaces>
+                    """))
+
+        vlan_interfaces = self.switch.get_vlan_interfaces(705)
+
+        assert_that(vlan_interfaces, equal_to(["xe-0/0/9"]))

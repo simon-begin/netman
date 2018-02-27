@@ -13,18 +13,12 @@
 # limitations under the License.
 from ncclient.xml_ import to_ele, new_ele
 
-from netman.adapters.switches.juniper.base import Juniper
+from netman.adapters.switches.juniper.base import Juniper, parse_range, value_of
 from netman.adapters.switches.juniper.qfx_copper import JuniperQfxCopperCustomStrategies
 from netman.core.objects.exceptions import BadVlanName, BadVlanNumber, VlanAlreadyExist, UnknownVlan
 
 
 class MxJuniper(Juniper):
-    def get_interface(self, interface_id):
-        raise NotImplementedError()
-
-    def get_interfaces(self):
-        raise NotImplementedError()
-
     def set_access_vlan(self, interface_id, vlan):
         raise NotImplementedError()
 
@@ -250,3 +244,27 @@ class JuniperMXCustomStrategies(JuniperQfxCopperCustomStrategies):
         elif "Must be a string" in message:
             raise BadVlanName()
         raise
+
+    def list_vlan_members(self, interface_node, config):
+        vlans = set()
+        for members in interface_node.xpath("unit/family/bridge/vlan-id-list"):
+            vlan_id = value_of(config.xpath('data/configuration/bridge-domains/domain/name[text()="{}"]/../vlan-id'.format(members.text)), transformer=int)
+            if vlan_id:
+                vlans = vlans.union([vlan_id])
+            else:
+                vlans = vlans.union(parse_range(members.text))
+        return sorted(vlans)
+
+    def create_interface(self, name, unit):
+        return to_ele("""
+            <interface>
+                <name>{}</name>
+                <unit>
+                    <name>{}</name>
+                    <family>
+                        <bridge>
+                        </bridge>
+                    </family>
+                </unit>
+            </interface>
+        """.format(name, unit))
