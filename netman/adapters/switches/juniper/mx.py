@@ -49,9 +49,6 @@ class MxJuniper(Juniper):
     def unset_interface_auto_negotiation_state(self, interface_id):
         raise NotImplementedError()
 
-    def set_interface_native_vlan(self, interface_id, vlan):
-        raise NotImplementedError()
-
     def unset_interface_native_vlan(self, interface_id):
         raise NotImplementedError()
 

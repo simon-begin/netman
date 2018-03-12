@@ -21,11 +21,13 @@ from ncclient.xml_ import to_ele
 
 from netman.adapters.switches.juniper.base import Juniper
 from netman.adapters.switches.juniper.mx import netconf
-from netman.core.objects.exceptions import VlanAlreadyExist, BadVlanNumber, BadVlanName, UnknownVlan, UnknownInterface
+from netman.core.objects.exceptions import VlanAlreadyExist, BadVlanNumber, BadVlanName, UnknownVlan, UnknownInterface, \
+    InterfaceInWrongPortMode, VlanAlreadyInTrunk
 from netman.core.objects.port_modes import ACCESS
 from netman.core.objects.switch_descriptor import SwitchDescriptor
 from netman.core.switch_factory import RealSwitchFactory
-from tests.adapters.switches.juniper_test import an_ok_response, is_xml, a_configuration, an_rpc_response
+from tests.adapters.switches.juniper_test import an_ok_response, is_xml, a_configuration, an_rpc_response, \
+    a_port_value_outside_range_rpc_error
 
 
 def test_factory():
@@ -690,3 +692,402 @@ class JuniperMXTest(unittest.TestCase):
         vlan_interfaces = self.switch.get_vlan_interfaces(705)
 
         assert_that(vlan_interfaces, equal_to(["xe-0/0/9"]))
+
+    def test_set_interface_native_vlan_on_interface_with_trunk_mode_and_no_native_vlan_succeeds_easily(self):
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces/>
+                <bridge-domains/>
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <bridge-domains>
+              <domain>
+                <name>PATATE</name>
+                <vlan-id>1000</vlan-id>
+              </domain>
+            </bridge-domains>
+            <interfaces>
+              <interface>
+                <name>xe-0/0/6</name>
+                <unit>
+                  <name>0</name>
+                  <family>
+                    <bridge>
+                      <interface-mode>trunk</interface-mode>
+                    </bridge>
+                  </family>
+                </unit>
+              </interface>
+            </interfaces>
+        """))
+
+        self.netconf_mock.should_receive("edit_config").once().with_args(target="candidate", config=is_xml("""
+            <config>
+              <configuration>
+                <interfaces>
+                  <interface>
+                    <name>xe-0/0/6</name>
+                    <unit>
+                      <name>0</name>
+                      <family>
+                        <bridge>
+                        </bridge>
+                      </family>
+                    </unit>
+                    <native-vlan-id>1000</native-vlan-id>
+                  </interface>
+                </interfaces>
+              </configuration>
+            </config>
+        """)).and_return(an_ok_response())
+
+        self.switch.set_interface_native_vlan("xe-0/0/6", 1000)
+
+    def test_set_interface_native_vlan_on_interface_that_already_has_it_does_nothing(self):
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces/>
+                <bridge-domains/>
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <bridge-domains>
+              <domain>
+                <name>PATATE</name>
+                <vlan-id>1000</vlan-id>
+              </domain>
+            </bridge-domains>
+            <interfaces>
+              <interface>
+                <name>xe-0/0/6</name>
+                <unit>
+                  <name>0</name>
+                  <family>
+                    <bridge>
+                      <interface-mode>trunk</interface-mode>
+                    </bridge>
+                  </family>
+                </unit>
+                <native-vlan-id>1000</native-vlan-id>
+              </interface>
+            </interfaces>
+        """))
+
+        self.netconf_mock.should_receive("edit_config").never()
+
+        self.switch.set_interface_native_vlan("xe-0/0/6", 1000)
+
+    def test_set_interface_native_vlan_on_interface_that_has_no_port_mode_sets_it(self):
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces/>
+                <bridge-domains/>
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <bridge-domains>
+              <domain>
+                <name>PATATE</name>
+                <vlan-id>1000</vlan-id>
+              </domain>
+            </bridge-domains>
+            <interfaces>
+              <interface>
+                <name>xe-0/0/6</name>
+                <unit>
+                  <name>0</name>
+                  <family>
+                    <bridge>
+                    </bridge>
+                  </family>
+                </unit>
+              </interface>
+            </interfaces>
+        """))
+
+        self.netconf_mock.should_receive("edit_config").once().with_args(target="candidate", config=is_xml("""
+            <config>
+              <configuration>
+                <interfaces>
+                  <interface>
+                    <name>xe-0/0/6</name>
+                    <unit>
+                      <name>0</name>
+                      <family>
+                        <bridge>
+                          <interface-mode>trunk</interface-mode>
+                        </bridge>
+                      </family>
+                    </unit>
+                    <native-vlan-id>1000</native-vlan-id>
+                  </interface>
+                </interfaces>
+              </configuration>
+            </config>
+        """)).and_return(an_ok_response())
+
+        self.switch.set_interface_native_vlan("xe-0/0/6", 1000)
+
+    def test_set_interface_native_vlan_on_interface_replaces_the_actual_ones(self):
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces/>
+                <bridge-domains/>
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <bridge-domains>
+              <domain>
+                <name>PATATE</name>
+                <vlan-id>1000</vlan-id>
+              </domain>
+              <domain>
+                <name>PATATE2</name>
+                <vlan-id>2000</vlan-id>
+              </domain>
+            </bridge-domains>
+            <interfaces>
+              <interface>
+                <name>xe-0/0/6</name>
+                <native-vlan-id>2000</native-vlan-id>
+                <unit>
+                  <name>0</name>
+                  <family>
+                    <bridge>
+                      <interface-mode>trunk</interface-mode>
+                    </bridge>
+                  </family>
+                </unit>
+              </interface>
+            </interfaces>
+        """))
+
+        self.netconf_mock.should_receive("edit_config").once().with_args(target="candidate", config=is_xml("""
+            <config>
+              <configuration>
+                <interfaces>
+                  <interface>
+                    <name>xe-0/0/6</name>
+                    <unit>
+                      <name>0</name>
+                      <family>
+                        <bridge>
+                        </bridge>
+                      </family>
+                    </unit>
+                    <native-vlan-id>1000</native-vlan-id>
+                  </interface>
+                </interfaces>
+              </configuration>
+            </config>
+        """)).and_return(an_ok_response())
+
+        self.switch.set_interface_native_vlan("xe-0/0/6", 1000)
+
+    def test_set_interface_native_vlan_on_interface_in_access_mode_should_raise(self):
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces/>
+                <bridge-domains/>
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <bridge-domains>
+              <domain>
+                <name>PATATE</name>
+                <vlan-id>1000</vlan-id>
+              </domain>
+            </bridge-domains>
+            <interfaces>
+              <interface>
+                <name>xe-0/0/6</name>
+                <unit>
+                  <name>0</name>
+                  <family>
+                    <bridge>
+                      <interface-mode>access</interface-mode>
+                    </bridge>
+                  </family>
+                </unit>
+              </interface>
+            </interfaces>
+        """))
+
+        self.netconf_mock.should_receive("edit_config").never()
+
+        with self.assertRaises(InterfaceInWrongPortMode) as expect:
+            self.switch.set_interface_native_vlan("xe-0/0/6", 1000)
+
+        assert_that(str(expect.exception), contains_string("Operation cannot be performed on a access mode interface"))
+
+    def test_set_interface_native_vlan_on_interface_that_is_already_a_member_of_the_trunk_raises(self):
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces/>
+                <bridge-domains/>
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <bridge-domains>
+              <domain>
+                <name>PATATE0</name>
+                <vlan-id>999</vlan-id>
+              </domain>
+              <domain>
+                <name>PATATE</name>
+                <vlan-id>1000</vlan-id>
+              </domain>
+              <domain>
+                <name>PATATE2</name>
+                <vlan-id>1001</vlan-id>
+              </domain>
+            </bridge-domains>
+            <interfaces>
+              <interface>
+                <name>xe-0/0/6</name>
+                <unit>
+                  <name>0</name>
+                  <family>
+                    <bridge>
+                      <interface-mode>trunk</interface-mode>
+                      <vlan-id-list>999-1001</vlan-id-list>
+                    </bridge>
+                  </family>
+                </unit>
+              </interface>
+            </interfaces>
+        """))
+
+        self.netconf_mock.should_receive("edit_config").never()
+
+        with self.assertRaises(VlanAlreadyInTrunk) as expect:
+            self.switch.set_interface_native_vlan("xe-0/0/6", 1000)
+
+        assert_that(str(expect.exception), contains_string("Vlan 1000 cannot be set as native vlan because it is already a member of the trunk"))
+
+    def test_set_interface_native_vlan_on_unknown_vlan_raises(self):
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+            <filter>
+              <configuration>
+                <interfaces/>
+                <bridge-domains/>
+              </configuration>
+            </filter>
+        """)).and_return(a_configuration("""
+            <bridge-domains>
+              <domain>
+                <name>PATATE</name>
+                <vlan-id>3333</vlan-id>
+              </domain>
+            </bridge-domains>
+            <interfaces>
+              <interface>
+                <name>xe-0/0/6</name>
+                <unit>
+                  <name>0</name>
+                  <family>
+                    <bridge>
+                      <interface-mode>trunk</interface-mode>
+                    </bridge>
+                  </family>
+                </unit>
+              </interface>
+            </interfaces>
+        """))
+
+        self.netconf_mock.should_receive("edit_config").never()
+
+        with self.assertRaises(UnknownVlan) as expect:
+            self.switch.set_interface_native_vlan("xe-0/0/6", 1000)
+
+        assert_that(str(expect.exception), contains_string("Vlan 1000 not found"))
+
+    def test_set_interface_native_vlan_on_unknown_interface_raises(self):
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+                <filter>
+                  <configuration>
+                    <interfaces/>
+                    <bridge-domains/>
+                  </configuration>
+                </filter>
+            """)).and_return(a_configuration("""
+                <bridge-domains>
+                  <domain>
+                    <name>PATATE</name>
+                    <vlan-id>1000</vlan-id>
+                  </domain>
+                </bridge-domains>
+            """))
+
+        self.netconf_mock.should_receive("edit_config").once().with_args(target="candidate", config=is_xml("""
+            <config>
+              <configuration>
+                <interfaces>
+                  <interface>
+                    <name>xe-0/0/99</name>
+                    <unit>
+                      <name>0</name>
+                      <family>
+                        <bridge>
+                          <interface-mode>trunk</interface-mode>
+                        </bridge>
+                      </family>
+                    </unit>
+                    <native-vlan-id>1000</native-vlan-id>
+                  </interface>
+                </interfaces>
+              </configuration>
+            </config>
+        """)).and_raise(a_port_value_outside_range_rpc_error())
+
+        with self.assertRaises(UnknownInterface) as expect:
+            self.switch.set_interface_native_vlan("xe-0/0/99", 1000)
+
+        assert_that(str(expect.exception), contains_string("Unknown interface xe-0/0/99"))
+
+    def test_set_interface_native_vlan_on_default_interface_works(self):
+        self.netconf_mock.should_receive("get_config").with_args(source="candidate", filter=is_xml("""
+                <filter>
+                  <configuration>
+                    <interfaces/>
+                    <bridge-domains/>
+                  </configuration>
+                </filter>
+            """)).and_return(a_configuration("""
+                <bridge-domains>
+                  <domain>
+                    <name>PATATE</name>
+                    <vlan-id>1000</vlan-id>
+                  </domain>
+                </bridge-domains>
+            """))
+
+        self.netconf_mock.should_receive("edit_config").once().with_args(target="candidate", config=is_xml("""
+            <config>
+              <configuration>
+                <interfaces>
+                  <interface>
+                    <name>xe-0/0/6</name>
+                    <unit>
+                      <name>0</name>
+                      <family>
+                        <bridge>
+                          <interface-mode>trunk</interface-mode>
+                        </bridge>
+                      </family>
+                    </unit>
+                    <native-vlan-id>1000</native-vlan-id>
+                  </interface>
+                </interfaces>
+              </configuration>
+            </config>
+        """)).and_return(an_ok_response())
+
+        self.switch.set_interface_native_vlan("xe-0/0/6", 1000)
