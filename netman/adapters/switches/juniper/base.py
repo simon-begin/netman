@@ -731,7 +731,7 @@ class Juniper(SwitchBase):
     def fill_interface_from_node(self, interface, interface_node, config):
         if interface_node is not None:
             interface.port_mode = self.get_port_mode(interface_node) or ACCESS
-            vlans = list_vlan_members(interface_node, config)
+            vlans = self.custom_strategies.list_vlan_members(interface_node, config)
             if interface.port_mode is ACCESS:
                 interface.access_vlan = first(vlans)
             else:
@@ -782,7 +782,7 @@ class Juniper(SwitchBase):
             if len(native_vlan_id_node) == 1 and int(first(native_vlan_id_node).text) == vlan_number:
                 interfaces.append(first(interface.xpath("name")).text)
 
-            members = [members.text for members in interface.xpath("unit/family/ethernet-switching/vlan/members")]
+            members = [members.text for members in self.custom_strategies.get_interface_vlans(interface)]
             if _is_vlan_in_interface_members(vlan_number, vlan_name, members):
                 interfaces.append(first(interface.xpath("name")).text)
         return interfaces
@@ -1140,17 +1140,6 @@ def protocol_interface_update(name):
           <name>{}</name>
         </interface>
     """.format(name))
-
-
-def list_vlan_members(interface_node, config):
-    vlans = set()
-    for members in interface_node.xpath("unit/family/ethernet-switching/vlan/members"):
-        vlan_id = value_of(config.xpath('data/configuration/vlans/vlan/name[text()="{}"]/../vlan-id'.format(members.text)), transformer=int)
-        if vlan_id:
-            vlans = vlans.union([vlan_id])
-        else:
-            vlans = vlans.union(parse_range(members.text))
-    return sorted(vlans)
 
 
 def get_bond_master(interface_node):

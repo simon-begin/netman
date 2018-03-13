@@ -14,8 +14,7 @@
 from ncclient.xml_ import to_ele, new_ele
 from netaddr import IPNetwork
 
-from netman.adapters.switches.juniper.base import Juniper, Update
-from netman.adapters.switches.juniper.base import first
+from netman.adapters.switches.juniper.base import Juniper, first, Update, value_of, parse_range
 from netman.adapters.switches.juniper.qfx_copper import JuniperQfxCopperCustomStrategies
 from netman.core.objects.exceptions import BadVlanName, BadVlanNumber, VlanAlreadyExist, \
     UnknownVlan, IPAlreadySet, \
@@ -63,9 +62,6 @@ class MxJuniper(Juniper):
         raise NotImplementedError()
 
     def reset_interface(self, interface_id):
-        raise NotImplementedError()
-
-    def get_vlan_interfaces(self, vlan_number):
         raise NotImplementedError()
 
     def add_ip_to_vlan(self, vlan_number, ip_network):
@@ -341,6 +337,9 @@ class JuniperMXCustomStrategies(JuniperQfxCopperCustomStrategies):
     def get_vlans(self, config):
         return config.xpath("data/configuration/bridge-domains/domain")
 
+    def get_interface_vlans(selfs, interface):
+        return interface.xpath("unit/family/bridge/vlan-id-list")
+
     def get_vlan_config(self, number, config):
         vlan_node = config.xpath("data/configuration/bridge-domains/domain/vlan-id[text()=\"{}\"]/..".format(number))
 
@@ -364,6 +363,16 @@ class JuniperMXCustomStrategies(JuniperQfxCopperCustomStrategies):
             return if_name_node.text.split(".")
         else:
             return None, None
+
+    def list_vlan_members(self, interface_node, config):
+        vlans = set()
+        for members in interface_node.xpath("unit/family/bridge/vlan-id-list"):
+            vlan_id = value_of(config.xpath('data/configuration/bridge-domains/domain/name[text()="{}"]/../vlan-id'.format(members.text)), transformer=int)
+            if vlan_id:
+                vlans = vlans.union([vlan_id])
+            else:
+                vlans = vlans.union(parse_range(members.text))
+        return sorted(vlans)
 
 
 def one_interface_vlan(vlan_number):
